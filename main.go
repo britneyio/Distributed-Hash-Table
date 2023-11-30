@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"net"
@@ -9,52 +10,118 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
-	"encoding/json"
 )
 
 type operationType int64
 
 const (
-	STORE operationType = iota
+	STORE    operationType = iota
 	RETRIEVE operationType = iota
-	JOIN operationType = iota
+	JOIN     operationType = iota
 )
 
 type responseType int64
+
 const (
-	SUCCESS responseType = iota
-	FAILURE responseType = iota
-	UNDEFINED responseType = iota
+	SUCCESS    responseType = iota
+	FAILURE    responseType = iota
+	UNDEFINED  responseType = iota
+	OBJ_STORED responseType = iota
 )
+
 type peerData struct {
-	id int,
-	predecessor int,
-	successor int
+	id          int
+	predecessor int
+	successor   int
 }
 
 type request struct {
-	reqId int,
-	op operationType,
-	objId int,
-	clientId int,
-	res responseType
+	reqId    int
+	op       operationType
+	objId    int
+	clientId int
+	res      responseType
 }
 
 var (
-	isBootstrap	bool
-	isPeer	bool
-	isClient bool
-	peer_list []int
-	store_name string
-	server_name string
-	hostname string
-	objectsMap map[int]int
-	myData peerData
-	clientname string
+	isBootstrap    bool
+	isPeer         bool
+	isClient       bool
+	peer_list      []int
+	store_name     *string
+	server_name    *string
+	hostname       string
+	objectsMap     map[string]string
+	myData         peerData
+	myRequest      request
+	PORT           = "4950"
+	currentData    peerData
+	currentRequest request
 )
 
+func main() {
+	server_name = flag.String("b", "", "bootstrap server name")
+	start_delay := flag.Int("d", 0, "the delay before starting up")
+	store_name = flag.String("o", "", "object store filename")
+	request_value := flag.Int("t", 0, "the value that should be stored")
 
+	flag.Parse()
+	var err error
+	hostname, err = os.Hostname()
+	checkIfError(err, "Error getting hostname:")
+
+	currentHostRole(hostname)
+
+	duration := time.Duration(*start_delay) * time.Second
+	var (
+		SERVER_HOST = hostname
+		SERVER_PORT = "4950"
+		SERVER_TYPE = "tcp"
+	)
+
+	listener, err := net.Listen(SERVER_TYPE, SERVER_HOST+":"+SERVER_PORT)
+	checkIfError(err, "Error listening:")
+
+	go listen(listener)
+
+	time.Sleep(duration)
+
+	if isClient {
+		myRequest := request{
+			reqId:    0,
+			objId:    *request_value,
+			clientId: 1,
+			op:       -1,
+			res:      UNDEFINED,
+		}
+		sendRequest(*server_name, myRequest)
+	}
+
+	if isPeer {
+		openObjectFile(*store_name)
+		join()
+	}
+
+	select {}
+}
+
+// sends joins to the bootstrap
+func join() {
+	i, err := strconv.Atoi(hostname)
+	if err != nil {
+		fmt.Println("Error:", err)
+		return
+	}
+	myData = peerData{
+		id:          i,
+		predecessor: -1,
+		successor:   128,
+	}
+
+	sendPeerData(*server_name, myData)
+	fmt.Fprintf(os.Stderr, "Peer %d joined\n", i)
+
+}
 
 func checkIfError(e error, message string) {
 	if e != nil {
@@ -63,355 +130,7 @@ func checkIfError(e error, message string) {
 	}
 }
 
-func contains(list []int, value int) bool {
-	for _, v := range list {
-		if v == value {
-			return true
-		}
-	}
-	return false
-}
-
-func add_peer(peer_id int) {
-	peer_list = append(peer_list, peer_id)
-	calculate_and_inform(peer_id);
-
-	//fmt.Fprintf(stderr, peer_list);
-}
-
-// bootstrap methods
-func calculate_and_inform(peer_id int) {
-	int pre = 0;
-	for (int i = 0; i < len(peer_list); i++) {
-		if (peer_id > peer_list[i] && peer_list[i] > pre) {
-			pre = peer_list[i];
-		} 
-	}
-	int suc = 128;
-	for (int i = 0; i < len(peer_list); i++) {
-		if (peer_id < peer_list[i] && peer_list[i] < suc) {
-			suc = peer_list[i];
-		} 
-	}
-	var pd peerData := {
-		id : peer_id,
-		predecessor : pre,
-		successor : suc
-	}
-	inform_peer(peer_id, pd);
-	if (pre > 0) { 
-	inform_peer(predecessor, pd);
-	}
-	if (suc < 128) {
-	inform_peer(successor, pd);
-	}
-}
-
-
-func inform_peer(peer_id int, pd peerData) {
-	sendPeerData(peer_id, pd)
-}
-
-func request_peer(req request) {
-	sendValue(1, req)
-}
-
-func send_client(req request) {
-	sendValue(req.clientId, req)
-}
-
-
-// peer methods
-func join(peer_id string) {
-	var pd peerData := {
-		id : int(peer_id),
-		predecessor : -1,
-		successor : -1
-	}
-
-	sendPeerData(server_name, pd)
-}
-
-func receive_peerData(pd peerData) {
-	if (pd.id == myData.id) {
-		myData = peerData {
-			id : pd.id,
-			predecessor : pd.predecessor,
-			successor : pd.successor
-		}
-	}
-	if (pd.predecessor == myData.id) {
-		myData.successor == pd.id;
-	}
-	if (pd.successor == myData.id) {
-		myData.predecessor = pd.id;
-	}
-}
-func store_or_retrieve_object(req request) {
-	if (req.op == STORE) {
-		store_object(req)
-	} 
-	if (req.op == RETRIEVE) {
-		retrieve_object(req)
-	}
-}
-
-// retrive object from store
-func retrieve_object(r request) {
-	var req request
-
-	for key, value := range objectsMap {
-		if (r.objId == value && key == r.clientId) {
-			// if value is found, it will be a success
-			req = request{
-				reqId : r.reqId,
-				op : r.op
-				objId : r.objId
-				clientId : r.clientId,
-				res : SUCCESS
-			}
-
-			sendValue(server_name, req)
-			break;
-			
-		}
-	}
-
-	req = request{
-		reqId : r.reqId,
-		op : r.op
-		objId : r.objId
-		clientId : r.clientId,
-		res : SUCCESS
-	}
-
-	sendValue(server_name, req)
-}
-
-func store_object {
-
-}
-
-// client methods
-func sendRequest(value int) {
-	var req request
-	req = request {
-		reqId : r.reqId,
-		op : r.op
-		objId : value
-		clientId : r.clientId,
-		res : NOTHING
-	}
-	sendValue(server_name, req)
-}
-
-func recvfrom_bootstrap(req request) {
-	if (req.res == SUCCESS) {
-		if (req.op == STORE) {
-			fmt.Fprintf(stderr, "STORED: %d", req.objId)
-		}
-		if (req.op == RETRIEVE) {
-			fmt.Fprintf(stderr, "RETRIEVED: %d", req.objId)
-		}
-	} 
-
-	if (req.res == FAILURE) {
-		if (req.op == RETRIEVE) {
-			fmt.Fprintf(stderr, "NOT FOUND: %d", req.objId)
-
-		}
-	}
-}
-
-
-func main() {
-		// command line inputs
-		server_name = flag.String("b", "", "bootstrap server name")
-		start_delay := flag.Int("d", 0, "the delay before starting up")
-		store_name = flag.String("o", "", "object store filename")
-		request_value = flag.Int("t", "", "the value that should be stored")
-	
-		flag.Parse()
-
-		hostname, err = os.Hostname()
-		checkIfError(err, "Error getting hostname:")
-
-		currentHostRole(hostname)
-
-		duration := time.Duration(*start_delay) * time.Second
-		var (
-			SERVER_HOST = hostname
-			SERVER_PORT = "4950"
-			SERVER_TYPE = "tcp"
-		)
-
-		listener, err := net.Listen(SERVER_TYPE, SERVER_HOST+":"+SERVER_PORT)
-		checkIfError(err, "Error listening:")
-	
-		go listen(listener)
-
-		time.Sleep(duration)
-
-		if (isClient) {
-			sendRequest(request_value)
-		}
-
-		if (isPeer) {
-			join(hostname)
-		}
-
-
-
-}
-
-
-// processsing
-
-func sendPeerData(peer_id string, pd PeerData) {
-	var SERVER_TYPE = "tcp"
-
-	addr, err := net.ResolveTCPAddr(SERVER_TYPE, peer_id+":"+PORT)
-	if err != nil {
-		fmt.Println("Error resolving address:", err)
-		return
-	}
-
-	connection, err := net.DialTCP(SERVER_TYPE, nil, addr)
-	if err != nil {
-		fmt.Println("Error connecting:", err)
-		return
-	}
-
-	jsonData, err := json.Marshal(pd)
-	if err != nil {
-			fmt.Println("Error marshalling JSON:", err)
-			return
-		}
-	_, err = connection.Write(jsonData)
-	if err != nil {
-		fmt.Println("Error reading:", err.Error())
-	}
-	defer connection.Close()
-}
-
-func requestToBytes(r request) []byte {
-	return []byte(fmt.Sprintf("%d,%d,%d,%d", r.reqId, r.op, r.objId, r.clientId))
-}
-
-// Convert byte slice to proposal
-func bytesToRequest(data []byte) proposal {
-	var r request
-	fmt.Sscanf(string(data), "%d,%d,%d,%d", &r.reqId, &r.op, &r.objId, &r.clientId)
-	return r
-}
-
-func processBuffer(buffer []byte) {
-	var data interface{}
-
-	err := json.Unmarshal(buffer, &data)
-	if err != nil {
-		fmt.Println("Error unmarshalling JSON:", err.Error())
-		return
-	}
-
-	switch v := data.(type) {
-	case map[string]interface{}:
-		// Check if it's peerData or request based on the presence of specific keys
-		if _, ok := v["id"]; ok {
-			pd := peerData{
-				id:          int(v["id"]),
-				predecessor: int(v["predecessor"]),
-				successor:   int(v["successor"]),
-			}
-		} else if _, ok := v["reqId"]; ok {
-			req := request{
-				reqId:    int(v["reqId"]),
-				op:       operationType(v["op"]),
-				objId:    int(v["objId"]),
-				clientId: int(v["clientId"]),
-				res:      responseType[v["res"]],
-			}
-			fmt.Println("Received request:", request)
-		} else {
-			fmt.Println("Unknown type received")
-		}
-	default:
-		fmt.Println("Unknown type received")
-	}
-}
-
-func receiveValue(connection net.Conn, peerName string) {
-	defer connection.Close()
-
-	// Read proposal from the connection
-	buffer := make([]byte, 1024)
-	mLen, err := connection.Read(buffer)
-	if err != nil {
-		fmt.Println("Error reading:", err.Error())
-		return
-	}
-
-	var currentRequest := bytesToRequest(buffer)
-
-	if (isPeer) {
-		if (currentRequest.objId >= peerData.id) {
-			sendValue(peerData.successor, r)
-		} else {
-			store_or_retrieve_object(currentRequest)
-		}
-	}
-
-	if (isBootstrap) {
-		processBuffer(buffer)
-		// needs if statement
-		// if receives from client sends to first in peer list
-		sendValue(peer_list[0], r)
-
-		// if receives from response from peer list and sends response to client
-		sendValue(req.clientId, req)
-
-	}
-
-	if (isClient) {
-		recvfrom_bootstrap(currentRequest)
-	}
-
-
-}
-
-
-
-
-
-
-
-
-
-func sendValue(peer_id int, req request) {
-	var SERVER_TYPE = "tcp"
-
-	addr, err := net.ResolveTCPAddr(SERVER_TYPE, peer+":"+PORT)
-	if err != nil {
-		fmt.Println("Error resolving address:", err)
-		return
-	}
-
-	connection, err := net.DialTCP(SERVER_TYPE, nil, addr)
-	if err != nil {
-		fmt.Println("Error connecting:", err)
-		return
-	}
-
-	requestBytes := requestToBytes(req)
-
-	///send proposal
-	_, err = connection.Write(requestBytes)
-	if err != nil {
-		fmt.Println("Error reading:", err.Error())
-	}
-	defer connection.Close()
-}
-
+// listens for the data
 func listen(listener net.Listener) {
 	defer listener.Close()
 	// fmt.Println(os.Stderr, "Listening on ")
@@ -440,6 +159,158 @@ func listen(listener net.Listener) {
 	}
 }
 
+func receiveValue(connection net.Conn, peerName string) {
+	defer connection.Close()
+
+	// Read proposal from the connection
+	buffer := make([]byte, 1024)
+	_, err := connection.Read(buffer)
+	if err != nil {
+		fmt.Println("Error reading:", err.Error())
+		return
+	}
+
+	var data interface{}
+
+	err = json.Unmarshal(buffer, &data)
+	if err != nil {
+		fmt.Println("Error unmarshalling JSON:", err.Error())
+		return
+	}
+
+	switch v := data.(type) {
+	case peerData:
+		currentData = peerData{
+			id:          v.id,
+			predecessor: v.predecessor,
+			successor:   v.successor,
+		}
+
+		if isPeer {
+			update_pd(v)
+		}
+
+		if isBootstrap {
+			add_peer(strconv.Itoa(v.id))
+		}
+		break
+	case request:
+		currentRequest = request{
+			reqId:    v.reqId,
+			clientId: v.clientId,
+			objId:    v.objId,
+			res:      v.res,
+			op:       v.op,
+		}
+
+		if isPeer {
+			if currentRequest.objId >= myData.id {
+				sendRequest(strconv.Itoa(currentData.successor), currentRequest)
+			} else {
+				store_or_retrieve_object(currentRequest)
+			}
+		}
+
+		if isBootstrap {
+			// received from client if undefined
+			if currentRequest.res == UNDEFINED {
+				sendRequest(strconv.Itoa(peer_list[0]), currentRequest)
+			} else {
+				if currentRequest.res == OBJ_STORED {
+					currentRequest.res = SUCCESS
+				}
+				sendRequest(strconv.Itoa(currentRequest.clientId), currentRequest)
+			}
+		}
+
+		if isClient {
+			recvfrom_bootstrap(currentRequest)
+		}
+		break
+	default:
+		fmt.Fprintf(os.Stderr, "ERROR: received a non peerData or request value")
+		break
+	}
+
+}
+
+func recvfrom_bootstrap(req request) {
+	if req.res == SUCCESS {
+		if req.op == STORE {
+			fmt.Println("STORED: ", req.objId)
+		}
+		if req.op == RETRIEVE {
+			fmt.Println("RETRIEVED: ", req.objId)
+		}
+	}
+
+	if req.res == FAILURE {
+		if req.op == RETRIEVE {
+			fmt.Println("NOT FOUND: ", req.objId)
+
+		}
+	}
+}
+
+// takes in a string for peer_id and and a request and
+// sends the request to peer_id (can be client, server, or peer)
+func sendRequest(peer_id string, req request) {
+	var SERVER_TYPE = "tcp"
+
+	addr, err := net.ResolveTCPAddr(SERVER_TYPE, peer_id+":"+PORT)
+	if err != nil {
+		fmt.Println("Error resolving address:", err)
+		return
+	}
+
+	connection, err := net.DialTCP(SERVER_TYPE, nil, addr)
+	if err != nil {
+		fmt.Println("Error connecting:", err)
+		return
+	}
+
+	jsonData, err := json.Marshal(req)
+	if err != nil {
+		fmt.Println("Error marshalling JSON:", err)
+		return
+	}
+	_, err = connection.Write(jsonData)
+	if err != nil {
+		fmt.Println("Error reading:", err.Error())
+	}
+	defer connection.Close()
+}
+
+// takes in a string for peer_id and and a peerData and
+// sends the peerData to peer_id (can be client, server, or peer)
+func sendPeerData(peer_id string, pd peerData) {
+	var SERVER_TYPE = "tcp"
+
+	addr, err := net.ResolveTCPAddr(SERVER_TYPE, peer_id+":"+PORT)
+	if err != nil {
+		fmt.Println("Error resolving address:", err)
+		return
+	}
+
+	connection, err := net.DialTCP(SERVER_TYPE, nil, addr)
+	if err != nil {
+		fmt.Println("Error connecting:", err)
+		return
+	}
+
+	jsonData, err := json.Marshal(pd)
+	if err != nil {
+		fmt.Println("Error marshalling JSON:", err)
+		return
+	}
+	_, err = connection.Write(jsonData)
+	if err != nil {
+		fmt.Println("Error reading:", err.Error())
+	}
+	defer connection.Close()
+}
+
+// based on the hostname it assigns the current hosts role
 func currentHostRole(line string) {
 	switch {
 	case strings.Contains(line, "client"):
@@ -452,31 +323,181 @@ func currentHostRole(line string) {
 	}
 }
 
+// opens the object file and sets objectsMap based on it
 func openObjectFile(filename string) {
 	file, err := os.Open(filename)
 	checkIfError(err, "Error opening file:")
 
 	defer file.Close()
 
-	objectsMap = make(map[int]int)
+	objectsMap = make(map[string]string)
 
-		// Create a scanner to read the file line by line
-		scanner := bufio.NewScanner(file)
+	// Create a scanner to read the file line by line
+	scanner := bufio.NewScanner(file)
 
-		// Iterate over each line in the file
-		for scanner.Scan() {
-			line := scanner.Text()
-	
-			// Check for errors during scanning
-			err := scanner.Err()
-			checkIfError(err, "Error reading file:")
+	// Iterate over each line in the file
+	for scanner.Scan() {
+		line := scanner.Text()
 
-			parts := strings.Split(input, "::")
+		// Check for errors during scanning
+		err := scanner.Err()
+		checkIfError(err, "Error reading file:")
 
-			// Create a map with the key-value pair
-			objectsMap[parts[0]] = parts[1]
+		parts := strings.Split(line, "::")
 
-			
+		// Create a map with the key-value pair
+		objectsMap[parts[0]] = parts[1]
+
+	}
+	fmt.Fprintf(os.Stderr, "objectsMap written\n")
+
+}
+
+// sets myData to received peerData
+func update_pd(pd peerData) {
+	if pd.id == myData.id {
+		myData = peerData{
+			id:          pd.id,
+			predecessor: pd.predecessor,
+			successor:   pd.successor,
 		}
+		fmt.Println("Joined the server, updated peerData:", myData)
+	}
+	if pd.predecessor == myData.id {
+		myData.successor = pd.id
+		fmt.Println("Updated my successor: ", myData)
+	}
+	if pd.successor == myData.id {
+		myData.predecessor = pd.id
+		fmt.Println("Updated my predecessor: ", myData)
+	}
+}
 
+// receieves a request and based on the operation,
+// sends it to store_object or retrieve_object
+func store_or_retrieve_object(req request) {
+	if req.op == STORE {
+		store_object(req)
+	}
+	if req.op == RETRIEVE {
+		retrieve_object(req)
+	}
+}
+
+// recieves a request and attempts to retrieve object from the objectMap
+// if successful it will send the same request with the SUCCESS response
+// else will send the same request with the FAILURE response
+func retrieve_object(r request) {
+	var req request
+
+	for key, value := range objectsMap {
+		if strconv.Itoa(r.objId) == value && key == strconv.Itoa(r.clientId) {
+			// if value is found, it will be a success
+			req = request{
+				reqId:    r.reqId,
+				op:       r.op,
+				objId:    r.objId,
+				clientId: r.clientId,
+				res:      SUCCESS,
+			}
+			fmt.Println("Successfully retrieved the object")
+			sendRequest(*server_name, req)
+			break
+
+		}
+	}
+
+	req = request{
+		reqId:    r.reqId,
+		op:       r.op,
+		objId:    r.objId,
+		clientId: r.clientId,
+		res:      FAILURE,
+	}
+	fmt.Println("Failed to retrive the object")
+	sendRequest(*server_name, req)
+}
+
+// uses the receieved requests clientId and objId to set in the objectsMap
+// then overwrites the objects file with the new objectsMap
+// then sends the received request but with a OBJ_STORED message to the server
+func store_object(r request) {
+	objectsMap[strconv.Itoa(r.clientId)] = strconv.Itoa(r.objId)
+	var d1 []byte
+
+	for key, value := range objectsMap {
+		// Concatenate key and value
+		entry := fmt.Sprintf("%s::%s\n", key, value)
+
+		// Convert the entry to bytes and append to the byte slice
+		d1 = append(d1, []byte(entry)...)
+	}
+
+	err := os.WriteFile(*store_name, d1, 0644)
+	checkIfError(err, "writing to file")
+	var req = request{
+		reqId:    r.reqId,
+		op:       r.op,
+		objId:    r.objId,
+		clientId: r.clientId,
+		res:      OBJ_STORED,
+	}
+	fmt.Println("Successfully stored the object, updated objectsMap: ", objectsMap)
+	sendRequest(*server_name, req)
+
+}
+func contains(list []int, value int) bool {
+	for _, v := range list {
+		if v == value {
+			return true
+		}
+	}
+	return false
+}
+
+func add_peer(peer_id string) {
+	pid, err := strconv.Atoi(peer_id)
+	if err != nil {
+		fmt.Println("Error:", err)
+		return
+	}
+	peer_list = append(peer_list, pid)
+	fmt.Println("Peer list: ", peer_list)
+	calculate_and_inform(peer_id)
+
+}
+
+func calculate_and_inform(peer_id string) {
+	var pre int
+	pre = 0
+	pid, err := strconv.Atoi(peer_id)
+	if err != nil {
+		fmt.Println("Error:", err)
+		return
+	}
+
+	for i := 0; i < len(peer_list); i++ {
+		if pid > peer_list[i] && peer_list[i] > pre {
+			pre = peer_list[i]
+		}
+	}
+	var suc int
+	suc = 128
+	for i := 0; i < len(peer_list); i++ {
+		if pid < peer_list[i] && peer_list[i] < suc {
+			suc = peer_list[i]
+		}
+	}
+	var pd = peerData{
+		id:          pid,
+		predecessor: pre,
+		successor:   suc,
+	}
+	sendPeerData(peer_id, pd)
+	if pre > 0 {
+		sendPeerData(strconv.Itoa(myData.predecessor), pd)
+	}
+	if suc < 128 {
+		sendPeerData(strconv.Itoa(myData.successor), pd)
+	}
 }
