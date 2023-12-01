@@ -1,0 +1,10 @@
+FROM golang:latest
+
+RUN go env -w GO111MODULE=off
+ADD main.go /prj5/
+ADD bootstrap-main.go /prj5/
+WORKDIR /prj5/
+RUN go build -o bootstrap-main
+
+
+ENTRYPOINT ["/prj5/bootstrap-main"]
