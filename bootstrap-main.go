@@ -127,10 +127,26 @@ func add_peer(peer_Id string) {
 	}
 	peerList = append(peerList, pId)
 	fmt.Fprintln(os.Stderr, "Peer list: ", peerList)
-	fmt.Fprintln(os.Stderr, "Peer map: ", peerMap)
+	//fmt.Fprintln(os.Stderr, "Peer map: ", peerMap)
 
 	calculate_and_inform(peer_Id)
 
+}
+
+func maxList(numbers []int) int {
+	if len(numbers) == 0 {
+		return 0
+	}
+
+	max := numbers[0] // Assume the first element is the maximum
+
+	for _, num := range numbers {
+		if num > max {
+			max = num
+		}
+	}
+
+	return max
 }
 
 func calculate_and_inform(peer_Id string) {
@@ -154,6 +170,12 @@ func calculate_and_inform(peer_Id string) {
 			suc = peerList[i]
 		}
 	}
+
+	// if peerId is the max of the List then its successor is peer 1
+	if pId == maxList(peerList) {
+		suc = 1
+	}
+
 	var pd = PeerData{
 		Id:          pId,
 		Predecessor: pre,
@@ -166,5 +188,6 @@ func calculate_and_inform(peer_Id string) {
 	}
 	if suc < 128 && suc > 0 {
 		sendPeerData("n"+strconv.Itoa(suc), pd)
+
 	}
 }

@@ -89,7 +89,7 @@ func sendRequest(peer_Id string, req Request) {
 // sends the PeerData to peer_Id (can be client, server, or peer)
 func sendPeerData(peer_Id string, pd PeerData) {
 	var SERVER_TYPE = "tcp"
-	fmt.Fprintln(os.Stderr, "peerId:", peer_Id)
+	//fmt.Fprintln(os.Stderr, "peerId:", peer_Id)
 	addr, err := net.ResolveTCPAddr(SERVER_TYPE, peer_Id+":"+PORT)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Error Resolving addRess:", err)
