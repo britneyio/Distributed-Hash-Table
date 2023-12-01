@@ -1,0 +1,4 @@
+I decided on separating the files based on Peer, Client, and Bootstrap because a lot of the methods were getting confusing
+to read and discern. I left the main file for sending data because that was same for all of them. I used a map for representing the
+object files because that is how the files were set up. The bootstrap server calculates the peers' predecessor and successor
+and then informs their predecessor and successors. It also facilitates the sending of requests.
