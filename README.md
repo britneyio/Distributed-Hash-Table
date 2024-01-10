@@ -4,7 +4,7 @@
 ### docker build . -f PeerDockerfile -t prj5-peer
 ### docker build . -f ClientDockerfile -t prj5-client
 ### To run: docker compose -f [testcase file] up
-# Similar: projects
+# Similar projects:
 ## https://github.com/britneyio/Chandy-Lamport-Algorithm
 ## https://github.com/britneyio/Paxos
 ## https://github.com/britneyio/Distributed-Membership
